@@ -33,18 +33,22 @@ refinement:
 
 appearance:
   num_iters: 10
+  qat:
+    enabled: true
+    steps: 10000
+    virtual_start: 20000
+    seed: 0
   quantized_attributes:
     - dc
     - sh
     - scale
     - rotation
-    - opacity
   codebook_size:
     dc: 4096
     sh: 4096
     scale: 4096
     rotation: 4096
-    opacity: 4096
 codec:
+  lowbit: true
   format: pt
   save_metadata: true

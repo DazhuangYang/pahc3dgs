@@ -79,18 +79,25 @@ class CompactScene:
         )
 
 
-def save_compact_scene(scene: CompactScene, path: str | Path):
+def save_compact_scene(scene: CompactScene, path: str | Path, *, lowbit: bool = False):
     """Save a compact scene as a torch payload."""
 
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    torch.save(scene.to_payload(), path)
+    payload = scene.to_payload()
+    if lowbit:
+        from .lowbit import encode_payload
+        payload = encode_payload(payload)
+    torch.save(payload, path)
 
 
 def load_compact_scene(path: str | Path, map_location: str | torch.device = "cpu"):
     """Load a compact scene saved by :func:`save_compact_scene`."""
 
     payload = torch.load(path, map_location=map_location, weights_only=False)
+    if "storage" in payload:
+        from .lowbit import decode_payload
+        payload = decode_payload(payload)
     return CompactScene.from_payload(payload)
 
 def decode_compact_basis(scene: CompactScene):
@@ -155,7 +162,13 @@ def expand_compact_basis(scene: CompactScene, base):
             if "rotation" in output:
                 output["rotation"] = quat_multiply(global_quat.unsqueeze(0), output["rotation"])
             if "scaling" in output:
-                output["scaling"] = output["scaling"] * scale
+                if scene.metadata.get("parameter_space") == "raw":
+                    # GaussianModel stores log-scales; legacy payloads keep their convention.
+                    if not bool(torch.isfinite(scale).all()) or bool((scale <= 0).any()):
+                        raise ValueError("Instance scale must be finite and positive")
+                    output["scaling"] = output["scaling"] + torch.log(scale)
+                else:
+                    output["scaling"] = output["scaling"] * scale
             if "features_rest" in output:
                 output["features_rest"] = torch.zeros_like(output["features_rest"])
         chunks.append(output)

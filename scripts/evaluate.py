@@ -25,7 +25,8 @@ def main():
         if xyz is None:
             xyz = scene.templates.get("xyz")
         final_count = int(xyz.shape[0]) if xyz is not None else 0
-    report = compression_report(args.original_count, final_count, final_payload=scene.to_payload())
+    report = compression_report(args.original_count, final_count, final_bytes=args.compact_scene.stat().st_size)
+    report["storage_basis"] = "original FP32 parameter estimate / complete saved file bytes"
     text = json.dumps(report, indent=2)
     if args.output:
         args.output.parent.mkdir(parents=True, exist_ok=True)

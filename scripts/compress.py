@@ -15,7 +15,9 @@ from src.backend import load_trained_scene
 from src.codec import (
     CompactScene,
     TemplateInstance,
-    decode_compact_basis,
+    decode_compact_scene,
+    expand_compact_basis,
+    load_compact_scene,
     save_compact_scene,
 )
 from src.compression import (
@@ -123,15 +125,18 @@ def build_real_compact_scene(gaussians, result, appearance_cfg):
         "rotation": configured_sizes.get("rotation", 4096),
         "opacity": configured_sizes.get("opacity", 4096),
     }
-    with torch.no_grad():
-        codebooks = quantize_appearance_attributes(
-            quantized_attributes,
-            codebook_sizes=codebook_sizes,
-            num_iters=int(appearance_cfg.get("num_iters", 10)),
-        )
+    qat_enabled = bool(appearance_cfg.get("qat", {}).get("enabled", False))
+    codebooks = {}
+    if not qat_enabled:
+        with torch.no_grad():
+            codebooks = quantize_appearance_attributes(
+                quantized_attributes,
+                codebook_sizes=codebook_sizes,
+                num_iters=int(appearance_cfg.get("num_iters", 10)),
+            )
     static_gaussians = {"xyz": gaussians._xyz.detach().cpu()}
     for name, values in attributes.items():
-        if name not in quantized_names:
+        if qat_enabled or name not in quantized_names:
             static_gaussians[name] = values.cpu()
     compact = CompactScene(
         templates=templates,
@@ -148,7 +153,8 @@ def build_real_compact_scene(gaussians, result, appearance_cfg):
             "num_templates": len(templates),
             "num_instances": len(instances),
             "quantized_attributes": sorted(quantized_names),
-            "quantized_evaluation": "quantized_basis_with_unquantized_instance_payloads",
+            "parameter_space": "raw",
+            "quantized_evaluation": "saved_package_independent_decode",
         },
     )
     return compact, basis_tensors
@@ -288,15 +294,29 @@ def main():
         result,
         appearance_cfg,
     )
+    qat_cfg = dict(appearance_cfg.get("qat", {}))
+    if qat_cfg.get("enabled", False):
+        from src.qat import fit_qat
+        sizes = appearance_cfg.get("codebook_size", {})
+        qat_cfg["codebook_sizes"] = {
+            "features_dc": sizes.get("dc", 4096),
+            "features_rest": sizes.get("sh", 4096),
+            "scaling": sizes.get("scale", 4096),
+            "rotation": sizes.get("rotation", 4096),
+        }
+        print("  Refining shared basis with four-group STE QAT...")
+        compact = fit_qat(compact, basis_tensors, loaded, qat_cfg,
+                          args.output.with_suffix(".qat"))
+    compact.metadata["quantized_evaluation"] = "saved_package_independent_decode"
     compact.metadata["model_path"] = str(args.model_path.resolve())
     compact.metadata["feature_iteration"] = feature_iteration
+    lowbit = bool(cfg_raw.get("codec", {}).get("lowbit", False))
+    save_compact_scene(compact, args.output, lowbit=lowbit)
+    stored_scene = load_compact_scene(args.output)
     if not args.skip_evaluation:
         print("=== Stage 4/4: Rendering evaluation ===")
         device = loaded["gaussians"]._xyz.device
-        unquantized_tensors = append_payloads(
-            basis_tensors,
-            result["instance_payloads"],
-        )
+        unquantized_tensors = expand_compact_basis(compact, basis_tensors)
         unquantized_model = make_gaussian_model(
             loaded["backend"],
             unquantized_tensors,
@@ -312,14 +332,7 @@ def main():
             loaded["backend"],
             loaded["dataset"].white_background,
         )
-        quantized_basis = {
-            name: values.to(device)
-            for name, values in decode_compact_basis(compact).items()
-        }
-        quantized_tensors = append_payloads(
-            quantized_basis,
-            result["instance_payloads"],
-        )
+        quantized_tensors = decode_compact_scene(stored_scene)
         quantized_model = make_gaussian_model(
             loaded["backend"],
             quantized_tensors,
@@ -327,7 +340,7 @@ def main():
             loaded["gaussians"].active_sh_degree,
             device,
         )
-        print("  Evaluating geo32-style quantized model...")
+        print("  Evaluating decoded stored model...")
         compact.metadata["quantized_metrics"] = evaluate_rendering(
             loaded["scene"],
             quantized_model,
@@ -336,7 +349,9 @@ def main():
             loaded["dataset"].white_background,
         )
 
-    save_compact_scene(compact, args.output)
+    # Serialize the same pre-storage tensors again, adding evaluation metadata.
+    if not args.skip_evaluation:
+        save_compact_scene(compact, args.output, lowbit=lowbit)
     print(json.dumps(compact.metadata, indent=2))
     print(f"Saved compact scene to {args.output}")
     return 0
