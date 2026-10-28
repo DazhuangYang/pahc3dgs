@@ -2,6 +2,7 @@
 
 Code for **Hierarchical Prototype Sharing for 3D Gaussian Splatting Compression
 of Aerospace Objects**.
+> The paper for this code was previously titled "Physics-Aware Hierarchical 3DGS Compression: An Efficient Representation for Aerospace Objects".
 
 HPS3DGS exploits repeated rigid components and material-related attribute
 regularities in aerospace objects to compress an unstructured 3D Gaussian
